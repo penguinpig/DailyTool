@@ -19,8 +19,6 @@ class FileInfo {
     <#檔案說明#>                [string]$FileMemo
     #C'tor
     FileInfo([string]$FileStatus, [string]$FileName, [string]$MachineType, [string]$FromPath, [string]$ToPath, [string]$FileMemo) {
-        if ([string]::IsNullOrEmpty($FileStatus) -or [string]::IsNullOrEmpty($FileName) -or [string]::IsNullOrEmpty($MachineType) `
-                -or [string]::IsNullOrEmpty($FromPath) -or [string]::IsNullOrEmpty($ToPath) -or [string]::IsNullOrEmpty($FileMemo)) { throw "Error" }
         $this.FileStatus = $FileStatus
         $this.FileName = $FileName
         $this.MachineType = $MachineType
@@ -38,9 +36,9 @@ class FileInfo {
 #壓縮檔案
 function CompressArchive {
     param (
-        [Parameter(Mandatory=$true)]
-        [string[]]$Path,    # Input folder paths (array of strings)
-        [Parameter(Mandatory=$true)]
+        [Parameter(Mandatory = $true)]
+        [string[]]$Path, # Input folder paths (array of strings)
+        [Parameter(Mandatory = $true)]
         [string]$DestinationPath      # Output zip file path
     )
 
@@ -186,11 +184,16 @@ function DisplayFileList {
         if (-not (Test-Path -Path $path)) {
             throw "$path is not exists"
         }
-        $result = @(Get-ChildItem -Recurse -file -Path "$path" -exclude *.zip) | foreach-Object { $_.FullName.substring($len) }
-        return $result
+        $fileMap = New-Object "System.Collections.Generic.Dictionary[string, boolean]"
+        @(Get-ChildItem -Recurse -file -Path "$path" -exclude *.zip) | foreach-Object {
+            $relativePath = $_.FullName.Substring($len)
+            $fileMap[$relativePath] = $true #Set any value to indicate the file exists
+        }
+        return $fileMap
     }
     #Summary Changed File
-    $ChangedFiles = New-Object System.Collections.Generic.List[System.Object]
+    $ChangedFiles = New-Object "System.Collections.Generic.Dictionary[string, FileInfo]"
+    $FileInfos = New-Object "System.Collections.Generic.Dictionary[string, FileInfo]"
     # Get Freezed File
     $HoldSource = _exeCommand -ip $HoldIP -fun $function:GetFile -param @("$HoldPath\$SourceFolder", $HoldPath.Length)
     $HoldObj = _exeCommand -ip $HoldIP -fun $function:GetFile -param @("$HoldPath\$ObjFolder", $HoldPath.Length)
@@ -198,34 +201,38 @@ function DisplayFileList {
     $NewSource = _exeCommand -ip $RootIP -fun $function:GetFile -param @("$RootPath\$DeployDate\$SourceFolder", "$RootPath\$DeployDate".Length)
     $NewObj = _exeCommand -ip $RootIP -fun $function:GetFile -param @("$RootPath\$DeployDate\$ObjFolder", "$RootPath\$DeployDate".Length)
     # Compoare Source
-    $NewSource | foreach-Object `
-    { 
-        $tmp = New-Object FileInfo (& { if ($HoldSource.Contains($_)) { "modify" } else { "new" } }), @($_ -split "\\")[-1], $_
-        $ChangedFiles.Add($tmp)
+    foreach ($pair  in $NewSource.Getenumerator()) {
+        $tmp = New-Object FileInfo (& { if ($HoldSource.ContainsKey($pair.Key)) { "modify" } else { "new" } }), @($pair.Key -split "\\")[-1], $pair.Key
+        $ChangedFiles[$pair.Key] = $tmp 
     }
     # Compare Obj
-    $NewObj | foreach-Object `
-    { 
-        $tmp = New-Object FileInfo (& { if ($HoldObj.Contains($_)) { "modify" } else { "new" } }), @($_ -split "\\")[-1], $_
-        $ChangedFiles.Add($tmp)
+    foreach ($pair  in $NewObj.Getenumerator()) {
+        $tmp = New-Object FileInfo (& { if ($HoldObj.ContainsKey($pair.Key)) { "modify" } else { "new" } }), @($pair.Key -split "\\")[-1], $pair.Key
+        $ChangedFiles[$pair.Key] = $tmp 
     }
-    # #Check FileInfo Setting，第一次執行將將所有本次的檔案先放進去之後用檢查的方式(新增)<用預設格式建立，方便之後讀取>
+    # Check FileInfos Setting，第一次執行將將所有本次的檔案先放進去之後用檢查的方式(新增)<用預設格式建立，方便之後讀取>
     if ( -not (Test-Path -Path $CsvFile)) {
         New-Item -itemType "file" -Path $CsvFile
-        $ChangedFiles | Export-Csv $CsvFile
+        $ChangedFiles.Values | Export-Csv -Path $CsvFile -Encoding UTF8
     }
-    # # #Read FileInfo Setting
-    $FileInfo = Import-Csv -Path $CsvFile
-    # #Add value when not found in csv (Will Add FileStatus temporarily)
-    $ChangedFiles | Where-Object { !$FileInfo.FromPath.Contains($_.FromPath) } | Export-Csv -Append $CsvFile    
-    # # #Refresh FileInfo
-    $FileInfo = Import-Csv -Path $CsvFile
-    #Display Data to gridView
+    # Read FileInfos Setting
+    $FileInfos.Clear()
+    Import-Csv -Path $CsvFile | ForEach-Object {
+        $FileInfos[$_.FromPath] = New-Object FileInfo $_.FileStatus, $_.FileName, $_.MachineType, $_.FromPath, $_.ToPath, $_.FileMemo
+    }
+    # Add value when not found in csv (Will Add FileStatus temporarily)
+    $ChangedFiles.Values | Where-Object { -not $FileInfos.ContainsKey($_.FromPath) } | Export-Csv -Append $CsvFile -Encoding UTF8
+    # Refresh FileInfos
+    $FileInfos.Clear()
+    Import-Csv -Path $CsvFile | ForEach-Object {
+        $FileInfos[$_.FromPath] = New-Object FileInfo $_.FileStatus, $_.FileName, $_.MachineType, $_.FromPath, $_.ToPath, $_.FileMemo
+    }
+    # Display Data to gridView
     $DataGridView1.Rows.Clear()
-    foreach ($elem in $ChangedFiles) {
-        $target = $FileInfo[[array]::IndexOf($FileInfo.FromPath, $elem.FromPath)]
-        $DataGridView1.Rows.Add($elem.FileStatus, $elem.FileName, $target.MachineType
-            , $elem.FromPath, $target.ToPath, $target.FileMemo)
+    foreach ($elem in $ChangedFiles.Values) {
+        $target = $FileInfos[$elem.FromPath]
+        $DataGridView1.Rows.Add($elem.FileStatus, $target.FileName, $target.MachineType
+            , $target.FromPath, $target.ToPath, $target.FileMemo)
     }
     $DataGridView1.Refresh()
     # #Display MessageBox
@@ -235,69 +242,79 @@ function DisplayFileList {
 function GenerateFileList {
     param([bool] $FileListSettings, [string]$CsvFile, [string]$RootIP, [string]$RootPath, [string]$DeployDate)
     _logInfo "產生檔案清單"
-    $ChangedFiles = New-Object System.Collections.Generic.List[System.Object]
+    $ChangedFiles = New-Object "System.Collections.Generic.Dictionary[string, FileInfo]"
+    $FileInfos = New-Object "System.Collections.Generic.Dictionary[string, FileInfo]"
     $IsAnyValueIsNullOrEmpty = $false
     #Capture value from gridView，Check value is not null or empty
     $DataGridView1.Update()
     #檢查有無空值，如有則不作後續
     foreach ($row in $DataGridView1.Rows) {
-        try {
-            $ChangedFiles += New-Object FileInfo $row.Cells["FileStatus"].Value, $row.Cells["FileName"].Value, `
-                $row.Cells["MachineType"].Value, $row.Cells["FromPath"].Value, `
-                $row.Cells["ToPath"].Value, $row.Cells["FileMemo"].Value
-        }
-        catch {
+        #檢查是否有空值
+        if ([string]::IsNullOrEmpty($row.Cells["FileStatus"].Value) -or `
+                [string]::IsNullOrEmpty($row.Cells["FileName"].Value) -or `
+                [string]::IsNullOrEmpty($row.Cells["MachineType"].Value) -or `
+                [string]::IsNullOrEmpty($row.Cells["FromPath"].Value) -or `
+                [string]::IsNullOrEmpty($row.Cells["ToPath"].Value) -or `
+                [string]::IsNullOrEmpty($row.Cells["FileMemo"].Value)) {
             $IsAnyValueIsNullOrEmpty = $true
             break
         }
+        $ChangedFiles[$row.Cells["FromPath"].Value] = New-Object FileInfo $row.Cells["FileStatus"].Value, $row.Cells["FileName"].Value, `
+            $row.Cells["MachineType"].Value, $row.Cells["FromPath"].Value, `
+            $row.Cells["ToPath"].Value, $row.Cells["FileMemo"].Value
     }
     if ($IsAnyValueIsNullOrEmpty) {
         [MessageBox]::Show("尚有未填入的資訊", "提示訊息")
-        return $null
+        $ChangedFiles.Clear()
     }
-    #先儲存資訊到Csv，儲存前清空檔案狀態
-    $FileInfos = Import-Csv -Path $CsvFile
-    foreach ($elem in $ChangedFiles) {
-        $tar = $FileInfos[[array]::IndexOf($FileInfos.FromPath, $elem.FromPath)]
-        $tar.FileStatus = ""    #清空檔案狀態
-        $tar.MachineType = $elem.MachineType
-        $tar.ToPath = $elem.ToPath
-        $tar.FileMemo = $elem.FileMemo
-    }
-    $FileInfos | Export-Csv -Path $CsvFile
-    #產生檔案清單(全部及機器種類區分)
-    #ModifyFile
-    $ModifyFile = "Modified Files -------`r`n"
-    $NewFile = "New Files -------`r`n"
-    $DeployFile = @{}
-    foreach ($elem in $ChangedFiles){
-        #Modify or New 
-        if($elem.FileStatus -eq "modify"){
-            $ModifyFile += "$($elem.FromPath)`r`n" 
+    else{
+        #先儲存資訊到Csv，儲存前清空檔案狀態
+        Import-Csv -Path $CsvFile | ForEach-Object {
+            $FileInfos[$_.FromPath] = New-Object FileInfo $_.FileStatus, $_.FileName, $_.MachineType, $_.FromPath, $_.ToPath, $_.FileMemo
         }
-        else{
-            $NewFile += "$($elem.FromPath)`r`n" 
+        foreach ($elem in $ChangedFiles.Values) {
+            $tar = $FileInfos[$elem.FromPath]
+            $tar.FileStatus = ""    #清空檔案狀態
+            $tar.MachineType = $elem.MachineType
+            $tar.ToPath = $elem.ToPath
+            $tar.FileMemo = $elem.FileMemo
+            $FileInfos[$elem.FromPath] = $tar
         }
-        #Deploy
-        if($elem.MachineType -ne "NULL"){
-            if(-not $DeployFile.Contains($elem.MachineType)){
-                $DeployFile.Add($elem.MachineType,"Deploy Files -------$($elem.MachineType)`r`n")
-                $DeployFile[$elem.MachineType] += "$($elem.FromPath),$($elem.ToPath)$($elem.FileName)`r`n" 
+        $FileInfos.Values | Export-Csv -Path $CsvFile -Encoding UTF8
+        #產生檔案清單(全部及機器種類區分)
+        #ModifyFile
+        $ModifyFile = "Modified Files -------`r`n"
+        $NewFile = "New Files -------`r`n"
+        $DeployFile = @{}
+        foreach ($elem in $ChangedFiles.Values) {
+            #Modify or New 
+            if ($elem.FileStatus -eq "modify") {
+                $ModifyFile += "$($elem.FromPath)`r`n" 
             }
-            else{
-                $DeployFile[$elem.MachineType] += "$($elem.FromPath),$($elem.ToPath)$($elem.FileName)`r`n" 
+            else {
+                $NewFile += "$($elem.FromPath)`r`n" 
+            }
+            #Deploy
+            if ($elem.MachineType -ne "NULL") {
+                if (-not $DeployFile.Contains($elem.MachineType)) {
+                    $DeployFile.Add($elem.MachineType, "Deploy Files -------$($elem.MachineType)`r`n")
+                    $DeployFile[$elem.MachineType] += "$($elem.FromPath),$($elem.ToPath)$($elem.FileName)`r`n" 
+                }
+                else {
+                    $DeployFile[$elem.MachineType] += "$($elem.FromPath),$($elem.ToPath)$($elem.FileName)`r`n" 
+                }
             }
         }
-    }
-    $content = "$ModifyFile`r`n$NewFile`r`n"
-    foreach($elem in $DeployFile.Getenumerator()){
-        $content += "$($elem.Value)`r`n"
-        if ($FileListSettings -eq $true) {
-            WriteContent -ip $RootIP -path "$RootPath\$DeployDate" -fileName "FileList_$($elem.Name).txt" -content $elem.Value
+        $content = "$ModifyFile`r`n$NewFile`r`n"
+        foreach ($elem in $DeployFile.Getenumerator()) {
+            $content += "$($elem.Value)`r`n"
+            if ($FileListSettings -eq $true) {
+                WriteContent -ip $RootIP -path "$RootPath\$DeployDate" -fileName "FileList_$($elem.Name).txt" -content $elem.Value
+            }
         }
+        WriteContent -ip $RootIP -path "$RootPath\$DeployDate" -fileName "FileList.txt" -content $content.Substring(0, $content.Length - 2)
     }
-    WriteContent -ip $RootIP -path "$RootPath\$DeployDate" -fileName "FileList.txt" -content $content.Substring(0,$content.Length - 2)
-    return $ChangedFiles 
+    return $ChangedFiles.Values
 }
 #備份凍版程式資料夾(供退版還原使用)
 function BackUpHoldSource {
@@ -358,7 +375,7 @@ function CopyFile {
 #產生檔案的時間戳記
 function GenerateTimeStamp {
     param([System.Collections.Generic.List[System.Object]]$ChangedFiles, [string] $RootIP, [string] $RootPath
-    , [string]$SourceFolder, [string]$ObjFolder)
+        , [string]$SourceFolder, [string]$ObjFolder)
     _logInfo "產生檔案的時間戳記"
     $folders = @($SourceFolder, $ObjFolder)
     $folders += $ChangedFiles | Select-Object -ExpandProperty MachineType -Unique | Where-Object { $_ -ne "NULL" } | foreach-Object { "Deploy_$_" }
@@ -396,7 +413,7 @@ function GenerateZipAndMD5 {
 #產生文件(程式名稱及檔案名稱、檔案名稱說明)
 function GenerateFileMemo {
     param([System.Collections.Generic.List[System.Object]]$ChangedFiles, [string] $RootIP, [string] $RootPath
-    , [string] $DeployDate)
+        , [string] $DeployDate)
     _logInfo "產生文件(程式名稱及檔案名稱、檔案名稱說明)"
     $content_1 = ""; $content_2 = "";
     #ModifyFile

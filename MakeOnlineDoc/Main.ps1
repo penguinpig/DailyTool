@@ -54,7 +54,9 @@ function Main {
     #產生filelist
     $ChangedFiles = GenerateFileList -FileListSettings $FileListSetting  -CsvFile $CsvFile `
         -RootIP $RootPath.IP -RootPath $RootPath.PATH -DeployDate $DeployDate
-    if ($null -ne $ChangedFiles) {
+    #ODO 待修正，There is problem that $ChangedFiles is Object[2]
+    $ChangedFiles = $ChangedFiles[1]
+    if ($null -ne $ChangedFiles -and $ChangedFiles.Count -gt 0) {
         #備份凍版程式資料夾(供退版還原使用)
         BackUpHoldSource -IP $HoldPath.IP -Path $HoldPath.PATH -DeployDate $DeployDate -SourceFolder $SourceFolder -ObjFolder $ObjFolder
         #複製檔案到(本次上線資料夾及凍版程式資料夾)
